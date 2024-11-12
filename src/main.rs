@@ -35,39 +35,38 @@ impl DnsResolver {
         // Serve from the local cache if we can...
         if let Some(resolved_dns) = self.find_resolved_host(&hostname) {
             return Some(resolved_dns);
-        }
-
-        // No cache entry so we need to perform the DNS lookup and
-        // update the cache...
-
-        let mut resolved_dns = None;
-
-        if let Some(notify) = self.get_notify(&hostname) {
-            // If we're already looking up this DNS entry, let's just
-            // wait on that completing...
-            notify.notified().await;
         } else {
-            // No current DNS lookup for this domain, so let's get it done...
+            // No cache entry so we need to perform the DNS lookup and
+            // update the cache...
+            if let Some(notify) = self.get_notify(&hostname) {
+                // If we're already looking up this DNS entry, let's just
+                // wait on that completing and then return the cache
+                // entry...
+                notify.notified().await;
+                self.find_resolved_host(&hostname)
+            } else {
+                // No current DNS lookup for this domain, so let's get it done...
 
-            // Record that we're currently looking up this domain
-            let notify = self.create_notify(&hostname);
+                // Record that we're currently looking up this domain
+                let notify = self.create_notify(&hostname);
 
-            // Perform the actual DNS lookup
-            resolved_dns = self.resolve_on_demand_dns(&hostname).await;
+                // Perform the actual DNS lookup
+                let resolved_dns = self.resolve_on_demand_dns(&hostname).await;
 
-            // Cache the response
-            self.cache_dns(&hostname, &resolved_dns);
+                // Cache the response
+                self.cache_dns(&hostname, &resolved_dns);
 
-            // Notify all waiters after the DNS resolving task completed.
-            notify.notify_waiters();
+                // Notify all waiters after the DNS resolving task completed.
+                notify.notify_waiters();
 
-            // The resolution is complete. We can remove the in-progress notify object.
-            self.in_progress.write().unwrap().remove(&hostname);
+                // The resolution is complete. We can remove the in-progress notify object.
+                self.in_progress.write().unwrap().remove(&hostname);
+
+                // We have the result; so can return directly and don't need
+                // to hit the cache for this...
+                resolved_dns
+            }
         }
-
-        // We can return the result directly to our waiters; we don't
-        // need to lookup in the cache again.
-        resolved_dns
     }
 
     fn get_notify(&self, hostname: &String) -> Option<Arc<Notify>> {
