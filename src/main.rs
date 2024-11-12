@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::net::IpAddr;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
@@ -14,11 +14,17 @@ struct DnsCache {
     data: Arc<RwLock<HashMap<String, ResolvedDns>>>,
 }
 
+#[derive(Debug)]
+enum NotifyType {
+    LookupNotify(Arc<Notify>),
+    AwaitNotify(Arc<Notify>),
+}
+
 #[derive(Default, Debug, Clone)]
 struct DnsResolver {
     cache: DnsCache,
     // Map of in-progress resolution requests.
-    in_progress: Arc<RwLock<HashMap<String, Arc<Notify>>>>,
+    in_progress: Arc<Mutex<HashMap<String, Arc<Notify>>>>,
 }
 
 #[allow(dead_code)]
@@ -62,7 +68,7 @@ impl DnsResolver {
     fn new() -> Self {
         Self {
             cache: DnsCache::new(),
-            in_progress: Arc::new(RwLock::new(HashMap::new())),
+            in_progress: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -73,52 +79,57 @@ impl DnsResolver {
         } else {
             // No cache entry so we need to perform the DNS lookup and
             // update the cache...
-            if let Some(notify) = self.get_notify(&hostname) {
-                // If we're already looking up this DNS entry, let's just
-                // wait on that completing and then return the cache entry...
-                notify.notified().await;
-                self.cache.get(&hostname)
-            } else {
-                // No current DNS lookup for this domain, so let's get that done...
+            match self.get_notify(&hostname) {
+                NotifyType::LookupNotify(notify) => {
+                    // No current DNS lookup for this domain, so let's get that done...
+                    event!(Level::INFO, "New DNS request started for: {hostname}");
 
-                // Record that we're currently looking up this domain
-                let notify = self.create_notify(&hostname);
+                    // Perform the actual DNS lookup
+                    let resolved_dns = self.resolve_on_demand_dns(&hostname).await;
 
-                // Perform the actual DNS lookup
-                let resolved_dns = self.resolve_on_demand_dns(&hostname).await;
+                    assert!(resolved_dns.is_some());
 
-                // Cache the response
-                self.cache.set(&hostname, &resolved_dns);
+                    // Cache the response
+                    self.cache.set(&hostname, &resolved_dns);
 
-                // As the resolution is complete, we can remove the in-progress
-                // notify object.
-                self.remove_notify(&hostname);
+                    // Notify all waiters after the DNS resolving task completed.
+                    notify.notify_waiters();
 
-                // Notify all waiters after the DNS resolving task completed.
-                notify.notify_waiters();
+                    // As the resolution is complete, we can remove the in-progress
+                    // notify object.
+                    self.remove_notify(&hostname);
 
-                // We have the result; so can return directly and don't need
-                // to hit the cache for this...
-                resolved_dns
+                    // We have the result; so can return directly and don't need
+                    // to hit the cache for this...
+                    assert!(resolved_dns.is_some());
+                    resolved_dns
+                }
+                NotifyType::AwaitNotify(notify) => {
+                    // If we're already looking up this DNS entry, let's just
+                    // wait on that completing and then return the cache entry...
+                    notify.notified().await;
+                    let result = self.cache.get(&hostname);
+                    assert!(result.is_some());
+                    result
+                }
             }
         }
     }
 
-    fn get_notify(&self, hostname: &str) -> Option<Arc<Notify>> {
-        let in_progress = self.in_progress.read().unwrap();
-        in_progress.get(hostname).map(|notify| notify.clone())
-    }
-
-    fn create_notify(&self, hostname: &String) -> Arc<Notify> {
-        let notify = Arc::new(Notify::new());
-        let mut in_progress = self.in_progress.write().unwrap();
-        in_progress.insert(hostname.clone(), notify.clone());
-        event!(Level::INFO, "Notify object created for: {hostname}");
-        notify
+    fn get_notify(&self, hostname: &String) -> NotifyType {
+        let mut in_progress = self.in_progress.lock().unwrap();
+        if let Some(notify) = in_progress.get(hostname) {
+            NotifyType::AwaitNotify(notify.clone())
+        } else {
+            let notify = Arc::new(Notify::new());
+            in_progress.insert(hostname.clone(), notify.clone());
+            event!(Level::INFO, "Notify object created for: {hostname}");
+            NotifyType::LookupNotify(notify)
+        }
     }
 
     fn remove_notify(&self, hostname: &str) {
-        self.in_progress.write().unwrap().remove(hostname);
+        self.in_progress.lock().unwrap().remove(hostname);
         event!(Level::INFO, "Removing object created for: {hostname}");
     }
 
