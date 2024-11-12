@@ -14,7 +14,6 @@ struct DnsCache {
 
 #[derive(Default, Debug, Clone)]
 struct DnsResolver {
-    // Map of resolved hostnames.
     cache: DnsCache,
     // Map of in-progress resolution requests.
     in_progress: Arc<RwLock<HashMap<String, Arc<Notify>>>>,
@@ -73,12 +72,11 @@ impl DnsResolver {
             // update the cache...
             if let Some(notify) = self.get_notify(&hostname) {
                 // If we're already looking up this DNS entry, let's just
-                // wait on that completing and then return the cache
-                // entry...
+                // wait on that completing and then return the cache entry...
                 notify.notified().await;
                 self.cache.get(&hostname)
             } else {
-                // No current DNS lookup for this domain, so let's get it done...
+                // No current DNS lookup for this domain, so let's get that done...
 
                 // Record that we're currently looking up this domain
                 let notify = self.create_notify(&hostname);
@@ -89,11 +87,12 @@ impl DnsResolver {
                 // Cache the response
                 self.cache.set(&hostname, &resolved_dns);
 
+                // As the resolution is complete, we can remove the in-progress
+                // notify object.
+                self.remove_notify(&hostname);
+
                 // Notify all waiters after the DNS resolving task completed.
                 notify.notify_waiters();
-
-                // The resolution is complete. We can remove the in-progress notify object.
-                self.in_progress.write().unwrap().remove(&hostname);
 
                 // We have the result; so can return directly and don't need
                 // to hit the cache for this...
@@ -102,7 +101,7 @@ impl DnsResolver {
         }
     }
 
-    fn get_notify(&self, hostname: &String) -> Option<Arc<Notify>> {
+    fn get_notify(&self, hostname: &str) -> Option<Arc<Notify>> {
         let in_progress = self.in_progress.read().unwrap();
         in_progress.get(hostname).map(|notify| notify.clone())
     }
@@ -112,6 +111,10 @@ impl DnsResolver {
         let mut in_progress = self.in_progress.write().unwrap();
         in_progress.insert(hostname.clone(), notify.clone());
         notify
+    }
+
+    fn remove_notify(&self, hostname: &str) {
+        self.in_progress.write().unwrap().remove(hostname);
     }
 
     async fn resolve_on_demand_dns(&self, hostname: &String) -> Option<ResolvedDns> {
