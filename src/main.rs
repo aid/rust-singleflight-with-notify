@@ -98,12 +98,15 @@ impl DnsResolver {
 async fn main() {
     let args: Vec<String> = env::args().collect();
     // Find the concurrency parameter
-    let concurrency_value = args.iter().position(|arg| arg == "--concurrency")
+    let concurrency_value = args
+        .iter()
+        .position(|arg| arg == "--concurrency")
         .and_then(|index| args.get(index + 1))
         .expect("Concurrency parameter not provided");
 
-    let concurrency: i32 = concurrency_value.parse()
-         .expect("Invalid concurrency parameter value");
+    let concurrency: i32 = concurrency_value
+        .parse()
+        .expect("Invalid concurrency parameter value");
 
     let resolver = DnsResolver::new();
 
@@ -114,7 +117,9 @@ async fn main() {
             let resolver = resolver.clone();
             tokio::spawn(async move {
                 let hostname = format!("example.com");
-                let _result = resolver.resolve_host(hostname).await;
+                let result = resolver.resolve_host(hostname).await;
+                assert!(result.is_some());
+                assert_eq!(result.unwrap().hostname, String::from("example.com"));
             })
         })
         .collect::<Vec<_>>();
