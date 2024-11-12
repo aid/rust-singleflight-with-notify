@@ -67,7 +67,7 @@ impl DnsResolver {
     async fn resolve_host(&self, hostname: String) -> Option<ResolvedDns> {
         // Serve from the local cache if we can...
         if let Some(resolved_dns) = self.cache.get(&hostname) {
-            return Some(resolved_dns);
+            Some(resolved_dns)
         } else {
             // No cache entry so we need to perform the DNS lookup and
             // update the cache...
