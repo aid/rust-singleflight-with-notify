@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
+use tracing::{event, Level};
 
 #[derive(Default, Debug, Clone)]
 struct DnsResolver {
@@ -42,6 +43,7 @@ impl DnsResolver {
             notify.notify_waiters();
 
             // The resolution is complete. We can remove the in-progress notify object.
+            event!(Level::INFO, "Removing object created for: {hostname}");
             self.in_progress.lock().unwrap().remove(&hostname);
         } else {
             // Wait for the in-progress resolution to complete.
@@ -59,6 +61,7 @@ impl DnsResolver {
             None => {
                 let notify = Arc::new(Notify::new());
                 in_progress.insert(hostname.clone(), notify.clone());
+                event!(Level::INFO, "Notify object created for: {hostname}");
                 (notify, true)
             }
         }
@@ -78,7 +81,7 @@ impl DnsResolver {
 
     async fn resolve_on_demand_dns(&self, hostname: &String) {
         // Simulated DNS resolution delay
-        thread::sleep(Duration::from_secs(2));
+        tokio::time::sleep(Duration::from_secs(2)).await;
         // Here you would perform the actual DNS resolution
         // and update the resolved map with the result.
         let mut resolved_map = self.resolved.write().unwrap();
@@ -91,11 +94,13 @@ impl DnsResolver {
                 dns_refresh_rate: Duration::from_secs(60), // Example refresh rate
             },
         );
+        event!(Level::INFO, "Cache entry created for: {hostname}");
     }
 }
 
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::fmt::init();
     let args: Vec<String> = env::args().collect();
     // Find the concurrency parameter
     let concurrency_value = args
@@ -116,10 +121,13 @@ async fn main() {
         .map(|_i| {
             let resolver = resolver.clone();
             tokio::spawn(async move {
-                let hostname = format!("example.com");
-                let result = resolver.resolve_host(hostname).await;
-                assert!(result.is_some());
-                assert_eq!(result.unwrap().hostname, String::from("example.com"));
+                for _ in 0..5 {
+                    let hostname = format!("example.com");
+                    let result = resolver.resolve_host(hostname).await;
+                    assert!(result.is_some());
+                    assert_eq!(result.unwrap().hostname, String::from("example.com"));
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
             })
         })
         .collect::<Vec<_>>();
