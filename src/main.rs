@@ -7,9 +7,15 @@ use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 
 #[derive(Default, Debug, Clone)]
+struct DnsCache {
+    // Map of resolved hostnames.
+    data: Arc<RwLock<HashMap<String, ResolvedDns>>>,
+}
+
+#[derive(Default, Debug, Clone)]
 struct DnsResolver {
     // Map of resolved hostnames.
-    resolved: Arc<RwLock<HashMap<String, ResolvedDns>>>,
+    cache: DnsCache,
     // Map of in-progress resolution requests.
     in_progress: Arc<RwLock<HashMap<String, Arc<Notify>>>>,
 }
@@ -23,17 +29,44 @@ struct ResolvedDns {
     dns_refresh_rate: std::time::Duration,
 }
 
+impl DnsCache {
+    fn new() -> Self {
+        Self {
+            data: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    fn get(&self, hostname: &str) -> Option<ResolvedDns> {
+        self.data
+            .read()
+            .unwrap()
+            .get(hostname)
+            .filter(|rdns| {
+                rdns.initial_query.is_some()
+                    && rdns.initial_query.unwrap().elapsed() < rdns.dns_refresh_rate
+            })
+            .cloned()
+    }
+
+    fn set(&self, hostname: &String, resolved_dns: &Option<ResolvedDns>) {
+        if let Some(dns) = resolved_dns {
+            let mut data_map = self.data.write().unwrap();
+            data_map.insert(hostname.clone(), dns.clone());
+        }
+    }
+}
+
 impl DnsResolver {
     fn new() -> Self {
         Self {
-            resolved: Arc::new(RwLock::new(HashMap::new())),
+            cache: DnsCache::new(),
             in_progress: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
     async fn resolve_host(&self, hostname: String) -> Option<ResolvedDns> {
         // Serve from the local cache if we can...
-        if let Some(resolved_dns) = self.find_resolved_host(&hostname) {
+        if let Some(resolved_dns) = self.cache.get(&hostname) {
             return Some(resolved_dns);
         } else {
             // No cache entry so we need to perform the DNS lookup and
@@ -43,7 +76,7 @@ impl DnsResolver {
                 // wait on that completing and then return the cache
                 // entry...
                 notify.notified().await;
-                self.find_resolved_host(&hostname)
+                self.cache.get(&hostname)
             } else {
                 // No current DNS lookup for this domain, so let's get it done...
 
@@ -54,7 +87,7 @@ impl DnsResolver {
                 let resolved_dns = self.resolve_on_demand_dns(&hostname).await;
 
                 // Cache the response
-                self.cache_dns(&hostname, &resolved_dns);
+                self.cache.set(&hostname, &resolved_dns);
 
                 // Notify all waiters after the DNS resolving task completed.
                 notify.notify_waiters();
@@ -81,18 +114,6 @@ impl DnsResolver {
         notify
     }
 
-    fn find_resolved_host(&self, hostname: &String) -> Option<ResolvedDns> {
-        self.resolved
-            .read()
-            .unwrap()
-            .get(hostname)
-            .filter(|rdns| {
-                rdns.initial_query.is_some()
-                    && rdns.initial_query.unwrap().elapsed() < rdns.dns_refresh_rate
-            })
-            .cloned()
-    }
-
     async fn resolve_on_demand_dns(&self, hostname: &String) -> Option<ResolvedDns> {
         // Simulated DNS resolution delay
         thread::sleep(Duration::from_secs(2));
@@ -103,13 +124,6 @@ impl DnsResolver {
             initial_query: Some(std::time::Instant::now()),
             dns_refresh_rate: Duration::from_secs(60), // Example refresh rate
         })
-    }
-
-    fn cache_dns(&self, hostname: &String, resolved_dns: &Option<ResolvedDns>) {
-        if let Some(dns) = resolved_dns {
-            let mut resolved_map = self.resolved.write().unwrap();
-            resolved_map.insert(hostname.clone(), dns.clone());
-        }
     }
 }
 
