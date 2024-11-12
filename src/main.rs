@@ -107,8 +107,15 @@ impl DnsResolver {
                 NotifyType::AwaitNotify(notify) => {
                     // If we're already looking up this DNS entry, let's just
                     // wait on that completing and then return the cache entry...
+                    let start = Instant::now();
+                    event!(Level::INFO, "AwaitNotify for {hostname}");
                     notify.notified().await;
                     let result = self.cache.get(&hostname);
+                    event!(
+                        Level::INFO,
+                        "AwaitNotify completed in {:?}",
+                        start.elapsed()
+                    );
                     assert!(result.is_some());
                     result
                 }
@@ -135,7 +142,7 @@ impl DnsResolver {
 
     async fn resolve_on_demand_dns(&self, hostname: &String) -> Option<ResolvedDns> {
         // Simulated DNS resolution delay
-        thread::sleep(Duration::from_secs(2));
+        tokio::time::sleep(Duration::from_secs(2)).await;
         // Here you would perform the actual DNS resolution
         Some(ResolvedDns {
             hostname: hostname.clone(),
@@ -174,7 +181,7 @@ async fn main() {
                     let result = resolver.resolve_host(hostname).await;
                     assert!(result.is_some());
                     assert_eq!(result.unwrap().hostname, String::from("example.com"));
-                    thread::sleep(Duration::from_secs(1));
+                    tokio::time::sleep(Duration::from_secs(5)).await;
                 }
             })
         })
